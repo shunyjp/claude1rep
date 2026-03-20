@@ -1,19 +1,19 @@
 """
-Claude Opus 4.6-based analyzer and summarizer for YouTube AI videos.
+LLM-based analyzer and summarizer for YouTube AI videos.
 
-Given a list of videos with transcripts, Claude:
+Given a list of videos with transcripts, the LLM:
 1. Selects the most important/newsworthy videos (up to 7)
 2. Produces a concise Japanese summary for each
+
+Supports Claude (Anthropic) and Gemini (Google) via llm_client.
 """
 
-import anthropic
-
-MODEL = "claude-opus-4-6"
+from llm_client import call_llm
 
 SYSTEM_PROMPT = """\
 あなたはAI業界の動向を深く理解しているテクノロジーアナリストです。
 YouTubeの動画情報（タイトル、チャンネル名、字幕テキスト）をもとに、
-直近7日間のAI関連動画の中から特に重要なものを選定し、
+直近の AI 関連動画の中から特に重要なものを選定し、
 わかりやすい日本語でサマリーを作成してください。
 
 重要度の判断基準:
@@ -44,7 +44,7 @@ URL: {url}
 OUTPUT_FORMAT = """\
 以下の形式で出力してください。マークダウンを使ってください。
 
-## 重要AI動画サマリー（直近7日間）
+## 重要AI動画サマリー
 
 ### 1. [動画タイトル]
 - **URL**: [動画URL]
@@ -80,7 +80,7 @@ def build_prompt(videos: list[dict]) -> str:
     all_entries = "\n".join(entries)
 
     return f"""\
-以下は直近7日間のYouTube上のAI関連動画（字幕テキスト付き）です。
+以下は直近の YouTube 上の AI 関連動画（字幕テキスト付き）です。
 合計 {len(videos)} 件の動画候補があります。
 
 この中から特に重要な動画を最大7件選定し、日本語でサマリーを作成してください。
@@ -91,35 +91,13 @@ def build_prompt(videos: list[dict]) -> str:
 """
 
 
-def analyze_and_summarize(videos: list[dict]) -> str:
+def analyze_and_summarize(videos: list[dict], provider: str = "claude") -> str:
     """
-    Use Claude Opus 4.6 with adaptive thinking to analyze videos and
-    produce a Japanese summary. Streams the response for responsiveness.
-    Returns the complete response text.
+    LLM をバッチモードで呼び出し、動画リストを分析して日本語サマリーを返す。
+    provider: "claude" | "gemini"
     """
     if not videos:
-        return "字幕付きの動画が見つかりませんでした。"
+        return "動画が見つかりませんでした。"
 
-    client = anthropic.Anthropic()
     prompt = build_prompt(videos)
-
-    collected_text: list[str] = []
-
-    with client.messages.stream(
-        model=MODEL,
-        max_tokens=4096,
-        thinking={"type": "adaptive"},
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
-    ) as stream:
-        for event in stream:
-            if event.type == "content_block_delta":
-                delta = event.delta
-                if delta.type == "text_delta":
-                    chunk = delta.text
-                    print(chunk, end="", flush=True)
-                    collected_text.append(chunk)
-                # thinking_delta is silently skipped (internal reasoning)
-
-    print()  # newline after streaming ends
-    return "".join(collected_text)
+    return call_llm(provider, SYSTEM_PROMPT, prompt, max_tokens=4096)

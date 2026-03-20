@@ -1,15 +1,21 @@
 """
 YouTube AI Summary App
 ======================
-直近7日間のYouTube AI動画の中から重要なものをピックアップし、
-Claude Opus 4.6 が日本語でサマリーを生成します。
-オプションで Web 検索による情報強化・ファクトチェックも実行します。
+直近の YouTube AI 動画の中から重要なものをピックアップし、
+LLM が日本語でサマリーを生成します。
+Claude (Anthropic) または Gemini (Google) を選択できます。
 
 使い方:
-  python main.py                    # サマリー生成のみ（直近30日）
-  python main.py --enrich           # サマリー生成 + Web 強化（NotebookLM最適化）
-  python main.py --days 60          # 検索範囲を60日に拡張
-  python main.py --days 60 --enrich # 範囲拡張 + Web 強化
+  python main.py                              # Claude でサマリー生成（直近30日）
+  python main.py --provider gemini            # Gemini でサマリー生成
+  python main.py --enrich                     # サマリー生成 + Web 強化
+  python main.py --days 60                    # 検索範囲を60日に拡張
+  python main.py --provider gemini --enrich   # Gemini + Web 強化
+
+環境変数:
+  ANTHROPIC_API_KEY  - Claude 使用時に必須
+  GEMINI_API_KEY     - Gemini 使用時に必須
+  YOUTUBE_API_KEY    - 常に必須
 """
 
 import os
@@ -18,35 +24,40 @@ from datetime import datetime
 
 from dotenv import load_dotenv
 
+from llm_client import get_provider_model
 from summarizer import analyze_and_summarize
 from youtube_client import fetch_videos_with_transcripts
 
 
-def check_env() -> tuple[str, str]:
-    """Validate required environment variables."""
+def check_env(provider: str) -> str:
+    """Validate required environment variables. Returns youtube_key."""
     youtube_key = os.environ.get("YOUTUBE_API_KEY", "").strip()
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 
     errors = []
     if not youtube_key:
         errors.append("YOUTUBE_API_KEY が設定されていません。")
-    if not anthropic_key:
-        errors.append("ANTHROPIC_API_KEY が設定されていません。")
+
+    if provider == "gemini":
+        if not os.environ.get("GEMINI_API_KEY", "").strip():
+            errors.append("GEMINI_API_KEY が設定されていません。")
+    else:
+        if not os.environ.get("ANTHROPIC_API_KEY", "").strip():
+            errors.append("ANTHROPIC_API_KEY が設定されていません。")
 
     if errors:
         print("エラー: 以下の環境変数を .env ファイルに設定してください。", file=sys.stderr)
         for e in errors:
             print(f"  - {e}", file=sys.stderr)
-        print("\n.env.example を参考に .env ファイルを作成してください。", file=sys.stderr)
         sys.exit(1)
 
-    return youtube_key, anthropic_key
+    return youtube_key
 
 
-def print_header(enrich_mode: bool = False):
+def print_header(provider: str, enrich_mode: bool = False):
     now = datetime.now().strftime("%Y年%m月%d日 %H:%M")
     print("=" * 60)
     print("  YouTube AI動画サマリー")
+    print(f"  プロバイダー: {provider} ({get_provider_model(provider)})")
     if enrich_mode:
         print("  モード: サマリー生成 + Web強化（NotebookLM最適化）")
     print(f"  生成日時: {now}")
@@ -65,26 +76,37 @@ def save_result(result: str) -> str:
     return filename
 
 
-def parse_days() -> int:
-    """--days N オプションを解析。デフォルト30日。"""
-    for i, arg in enumerate(sys.argv[1:], 1):
-        if arg == "--days" and i < len(sys.argv):
+def parse_args() -> tuple[str, int, bool]:
+    """CLI引数を解析。(provider, days, enrich_mode) を返す。"""
+    provider = "claude"
+    days = 30
+    enrich_mode = "--enrich" in sys.argv
+
+    argv = sys.argv[1:]
+    for i, arg in enumerate(argv):
+        if arg == "--provider" and i + 1 < len(argv):
+            provider = argv[i + 1]
+        elif arg == "--days" and i + 1 < len(argv):
             try:
-                return int(sys.argv[i + 1])
-            except (IndexError, ValueError):
+                days = int(argv[i + 1])
+            except ValueError:
                 pass
-    return 30
+
+    if provider not in ("claude", "gemini"):
+        print(f"エラー: 不明なプロバイダー '{provider}'。claude または gemini を指定してください。", file=sys.stderr)
+        sys.exit(1)
+
+    return provider, days, enrich_mode
 
 
 def main():
     load_dotenv()
 
-    enrich_mode = "--enrich" in sys.argv
-    days = parse_days()
+    provider, days, enrich_mode = parse_args()
 
-    print_header(enrich_mode)
+    print_header(provider, enrich_mode)
 
-    youtube_key, _ = check_env()
+    youtube_key = check_env(provider)
 
     # Step 1: Fetch AI videos with transcripts
     videos = fetch_videos_with_transcripts(youtube_key, days=days)
@@ -95,11 +117,11 @@ def main():
         print("例: python main.py --days 60")
         sys.exit(0)
 
-    # Step 2: Analyze and summarize with Claude
-    print("Claude Opus 4.6 が分析・サマリーを生成中...\n")
+    # Step 2: Analyze and summarize with LLM
+    print(f"{get_provider_model(provider)} が分析・サマリーを生成中...\n")
     print("-" * 60)
 
-    result = analyze_and_summarize(videos)
+    result = analyze_and_summarize(videos, provider=provider)
 
     print("-" * 60)
 
@@ -114,17 +136,16 @@ def main():
         print("=" * 60)
         print()
 
-        # Import here to avoid loading the module unnecessarily
         from enrich import enrich_summary, save_enriched
 
-        print("Claude Opus 4.6 + Web Search で情報収集・補完中...\n")
+        print(f"{get_provider_model(provider)} + Web Search で情報収集・補完中...\n")
         print("-" * 60)
 
-        enriched = enrich_summary(result)
+        enriched = enrich_summary(result, provider=provider)
 
         print("-" * 60)
 
-        enriched_file = save_enriched(enriched, summary_file)
+        enriched_file = save_enriched(enriched, summary_file, provider=provider)
         print(f"\n📚 NotebookLM 用強化レポート: {enriched_file}")
         print("   → Google NotebookLM (https://notebooklm.google.com/) にアップロードしてください。")
     else:
