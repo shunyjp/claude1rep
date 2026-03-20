@@ -6,8 +6,10 @@ Claude Opus 4.6 が日本語でサマリーを生成します。
 オプションで Web 検索による情報強化・ファクトチェックも実行します。
 
 使い方:
-  python main.py              # サマリー生成のみ
-  python main.py --enrich     # サマリー生成 + Web 強化（NotebookLM最適化）
+  python main.py                    # サマリー生成のみ（直近30日）
+  python main.py --enrich           # サマリー生成 + Web 強化（NotebookLM最適化）
+  python main.py --days 60          # 検索範囲を60日に拡張
+  python main.py --days 60 --enrich # 範囲拡張 + Web 強化
 """
 
 import os
@@ -63,21 +65,34 @@ def save_result(result: str) -> str:
     return filename
 
 
+def parse_days() -> int:
+    """--days N オプションを解析。デフォルト30日。"""
+    for i, arg in enumerate(sys.argv[1:], 1):
+        if arg == "--days" and i < len(sys.argv):
+            try:
+                return int(sys.argv[i + 1])
+            except (IndexError, ValueError):
+                pass
+    return 30
+
+
 def main():
     load_dotenv()
 
     enrich_mode = "--enrich" in sys.argv
+    days = parse_days()
 
     print_header(enrich_mode)
 
     youtube_key, _ = check_env()
 
-    # Step 1: Fetch AI videos with transcripts from the last 7 days
-    videos = fetch_videos_with_transcripts(youtube_key, days=7)
+    # Step 1: Fetch AI videos with transcripts
+    videos = fetch_videos_with_transcripts(youtube_key, days=days)
 
     if not videos:
-        print("字幕付きのAI動画が見つかりませんでした。")
-        print("ヒント: YOUTUBE_API_KEY が有効か、または対象期間を広げてみてください。")
+        print("AI動画が見つかりませんでした。")
+        print("ヒント: YOUTUBE_API_KEY が有効か確認し、--days で検索範囲を広げてみてください。")
+        print("例: python main.py --days 60")
         sys.exit(0)
 
     # Step 2: Analyze and summarize with Claude
